@@ -18,8 +18,12 @@ from lang_trans import arabic
 
 import soundfile as sf
 from model import Wav2Vec2ForCTCnCLS
+from proposed_model import Wav2Vec2AdversarialSpk
 from transformers.trainer_utils import get_last_checkpoint
 import os
+import datetime
+import wandb
+import pickle
 
 from transformers import (
     HfArgumentParser,
@@ -30,6 +34,8 @@ from transformers import (
     Wav2Vec2Processor,
     is_apex_available,
     trainer_utils,
+    EarlyStoppingCallback,
+    AdamW
 )
 
 
@@ -63,10 +69,6 @@ class ModelArguments:
     verbose_logging: Optional[bool] = field(
         default=False,
         metadata={"help": "Whether to log verbose messages or not."},
-    )
-    alpha: Optional[float] = field(
-        default=0.1,
-        metadata={"help": "loss_cls + alpha * loss_ctc"},
     )
     tokenizer: Optional[str] = field(
         default=None,
@@ -132,12 +134,6 @@ class DataTrainingArguments:
         default=None,
         metadata={"help": "Filters out examples longer than specified. Defaults to no filtering."},
     )
-    orthography: Optional[str] = field(
-        default="librispeech",
-        metadata={
-            "help": "Orthography used for normalization and tokenization: 'librispeech' (default), 'timit', or 'buckwalter'."
-        },
-    )
     overwrite_cache: bool = field(
         default=False, metadata={"help": "Overwrite the cached preprocessed datasets or not."}
     )
@@ -147,8 +143,8 @@ class DataTrainingArguments:
     )
 
     # select which split as test
-    split_id: str = field(
-        default='01F', metadata={"help": "iemocap_ + splitid (e.g. 01M, 02F, etc) + train/test.csv"}
+    split_id: int = field(
+        default='1', metadata={"help": "iemocap_ + splitid (e.g. 1, 2, etc) + train/val/test.csv"}
     )
 
     output_file: Optional[str] = field(
@@ -156,95 +152,13 @@ class DataTrainingArguments:
         metadata={"help": "Output file."},
     )
 
+    mode: str = field(
+        default='train_emotion',
+        metadata={'help': 'train_emotion, train_speaker, or eval'}
+    )
 
 @dataclass
-class Orthography:
-    """
-    Orthography scheme used for text normalization and tokenization.
-
-    Args:
-        do_lower_case (:obj:`bool`, `optional`, defaults to :obj:`False`):
-            Whether or not to accept lowercase input and lowercase the output when decoding.
-        vocab_file (:obj:`str`, `optional`, defaults to :obj:`None`):
-            File containing the vocabulary.
-        word_delimiter_token (:obj:`str`, `optional`, defaults to :obj:`"|"`):
-            The token used for delimiting words; it needs to be in the vocabulary.
-        translation_table (:obj:`Dict[str, str]`, `optional`, defaults to :obj:`{}`):
-            Table to use with `str.translate()` when preprocessing text (e.g., "-" -> " ").
-        words_to_remove (:obj:`Set[str]`, `optional`, defaults to :obj:`set()`):
-            Words to remove when preprocessing text (e.g., "sil").
-        untransliterator (:obj:`Callable[[str], str]`, `optional`, defaults to :obj:`None`):
-            Function that untransliterates text back into native writing system.
-    """
-
-    do_lower_case: bool = False
-    vocab_file: Optional[str] = None
-    word_delimiter_token: Optional[str] = "|"
-    translation_table: Optional[Dict[str, str]] = field(default_factory=dict)
-    words_to_remove: Optional[Set[str]] = field(default_factory=set)
-    untransliterator: Optional[Callable[[str], str]] = None
-    tokenizer: Optional[str] = None
-
-    @classmethod
-    def from_name(cls, name: str):
-        if name == "librispeech":
-            return cls()
-        if name == "timit":
-            return cls(
-                do_lower_case=True,
-                # break compounds like "quarter-century-old" and replace pauses "--"
-                translation_table=str.maketrans({"-": " "}),
-            )
-        if name == "buckwalter":
-            translation_table = {
-                "-": " ",  # sometimes used to represent pauses
-                "^": "v",  # fixing "tha" in arabic_speech_corpus dataset
-            }
-            return cls(
-                vocab_file=pathlib.Path(__file__).parent.joinpath("vocab/buckwalter.json"),
-                word_delimiter_token="/",  # "|" is Arabic letter alef with madda above
-                translation_table=str.maketrans(translation_table),
-                words_to_remove={"sil"},  # fixing "sil" in arabic_speech_corpus dataset
-                untransliterator=arabic.buckwalter.untransliterate,
-            )
-        raise ValueError(f"Unsupported orthography: '{name}'.")
-
-    def preprocess_for_training(self, text: str) -> str:
-        # TODO(elgeish) return a pipeline (e.g., from jiwer) instead? Or rely on branch predictor as is
-        if len(self.translation_table) > 0:
-            text = text.translate(self.translation_table)
-        if len(self.words_to_remove) == 0:
-            try:
-                text = " ".join(text.split())  # clean up whitespaces
-            except:
-                text = "NULL"
-        else:
-            text = " ".join(w for w in text.split() if w not in self.words_to_remove)  # and clean up whilespaces
-        return text
-
-    def create_processor(self, model_args: ModelArguments) -> Wav2Vec2Processor:
-        feature_extractor = Wav2Vec2FeatureExtractor.from_pretrained(
-            model_args.model_name_or_path, cache_dir=model_args.cache_dir
-        )
-        if self.vocab_file:
-            tokenizer = Wav2Vec2CTCTokenizer(
-                self.vocab_file,
-                cache_dir=model_args.cache_dir,
-                do_lower_case=self.do_lower_case,
-                word_delimiter_token=self.word_delimiter_token,
-            )
-        else:
-            tokenizer = Wav2Vec2CTCTokenizer.from_pretrained(
-                self.tokenizer,
-                cache_dir=model_args.cache_dir,
-                do_lower_case=self.do_lower_case,
-                word_delimiter_token=self.word_delimiter_token,
-            )
-        return Wav2Vec2Processor(feature_extractor, tokenizer)
-
-
-@dataclass
-class DataCollatorCTCWithPadding:
+class MyDataCollator:
     """
     Data collator that will dynamically pad the inputs received.
     Args:
@@ -281,10 +195,8 @@ class DataCollatorCTCWithPadding:
         # split inputs and labels since they have to be of different lenghts and need
         # different padding methods
         input_features = [{"input_values": feature["input_values"]} for feature in features]
-        if self.audio_only is False:
-            label_features = [{"input_ids": feature["labels"][:-1]} for feature in features]
-            cls_labels = [feature["labels"][-1] for feature in features]
-
+        cls_labels = [feature["labels"][-1] for feature in features]
+        
         batch = self.processor.pad(
             input_features,
             padding=self.padding,
@@ -292,25 +204,23 @@ class DataCollatorCTCWithPadding:
             pad_to_multiple_of=self.pad_to_multiple_of,
             return_tensors="pt",
         )
-        if self.audio_only is False:
-            with self.processor.as_target_processor():
-                labels_batch = self.processor.pad(
-                    label_features,
-                    padding=self.padding,
-                    max_length=self.max_length_labels,
-                    pad_to_multiple_of=self.pad_to_multiple_of_labels,
-                    return_tensors="pt",
-                )
-
-            # replace padding with -100 to ignore loss correctly
-            ctc_labels = labels_batch["input_ids"].masked_fill(labels_batch.attention_mask.ne(1), -100)
-            batch["labels"] = (ctc_labels, torch.tensor(cls_labels)) # labels = (ctc_labels, cls_labels)
+        batch["labels"] = torch.tensor(cls_labels) # labels = (ctc_labels, cls_labels)
 
         return batch
 
+class MyTrainer(Trainer):
 
-class CTCTrainer(Trainer):
+    def evaluate(
+        self,
+        eval_dataset: Optional[datasets.arrow_dataset.Dataset] = None,
+        ignore_keys: Optional[List[str]] = None,
+        metric_key_prefix: str = "eval",
+    ) -> Dict[str, float]:
+        self.model.mode = 'eval'
+        super().evaluate()
+
     def _prepare_inputs(self, inputs: Dict[str, Union[torch.Tensor, Any]]) -> Dict[str, Union[torch.Tensor, Any]]:
+
         for k, v in inputs.items():
             if isinstance(v, torch.Tensor):
                 kwargs = dict(device=self.args.device)
@@ -376,6 +286,32 @@ class CTCTrainer(Trainer):
 
         return loss.detach()
 
+class MyEarlyStoppingCallback(EarlyStoppingCallback):
+
+    def __init__(self, model, early_stopping_patience=5):
+        super().__init__(early_stopping_patience=early_stopping_patience)
+        self.model = model
+
+    def on_epoch_begin(self, args, state, control, **kwargs):
+        self.model.mode = 'train_emotion'
+        print('<debug:> on_epoch_begin, model.mode = ' + self.model.mode)
+
+    # def on_evaluate(self, args, state, control, **kwargs):
+    #     self.model.mode = 'eval'
+    #     print('<debug:> on_evaluate, model.mode = ' + self.model.mode)
+    #     super().on_evaluate(args, state, control, kwargs)
+
+def create_processor(model_args: ModelArguments) -> Wav2Vec2Processor:
+    feature_extractor = Wav2Vec2FeatureExtractor.from_pretrained(
+        model_args.model_name_or_path, cache_dir=model_args.cache_dir
+    )
+    tokenizer = Wav2Vec2CTCTokenizer.from_pretrained(
+        model_args.tokenizer,
+        cache_dir=model_args.cache_dir,
+        word_delimator_token='|',
+        do_lower_case=False
+    )
+    return Wav2Vec2Processor(feature_extractor, tokenizer)
 
 def main():
     # See all possible arguments in src/transformers/training_args.py
@@ -385,8 +321,13 @@ def main():
     parser = HfArgumentParser((ModelArguments, DataTrainingArguments, TrainingArguments))
 
     model_args, data_args, training_args = parser.parse_args_into_dataclasses()
+    dt_now = datetime.datetime.now()
+    id_str = dt_now.strftime('%Y%m%d_%H%M') + '_id_' + str(data_args.split_id)
+    training_args.output_dir = os.path.join(training_args.output_dir, 'output' + id_str)
+    training_args.logging_dir = os.path.join(training_args.logging_dir, 'logs' + id_str)
     configure_logger(model_args, training_args)
 
+    processor = create_processor(model_args)
     # Detecting last checkpoint.
     last_checkpoint = None
     if os.path.isdir(training_args.output_dir) and not training_args.overwrite_output_dir:
@@ -402,44 +343,31 @@ def main():
                 "the `--output_dir` or add `--overwrite_output_dir` to train from scratch."
             )
 
-    orthography = Orthography.from_name(data_args.orthography.lower())
-    orthography.tokenizer = model_args.tokenizer
-    processor = orthography.create_processor(model_args)
-
     if data_args.dataset_name == 'emotion':
-        train_dataset = datasets.load_dataset('csv', data_files='iemocap/iemocap_' + data_args.split_id + '.train.csv', cache_dir=model_args.cache_dir)['train']
-        val_dataset = datasets.load_dataset('csv', data_files='iemocap/iemocap_' + data_args.split_id + '.test.csv', cache_dir=model_args.cache_dir)['train']
-        cls_label_map = {"e0":0, "e1":1, "e2":2, "e3":3}
+        train_dataset = datasets.load_dataset('csv', data_files='../dataset/iemocap/iemocap_' + str(data_args.split_id) + '.train.csv', cache_dir=model_args.cache_dir)['train']
+        val_dataset = datasets.load_dataset('csv', data_files='../dataset/iemocap/iemocap_' + str(data_args.split_id) + '.val.csv', cache_dir=model_args.cache_dir)['train']
+        emotion_mapping = {"e0":0, "e1":1, "e2":2, "e3":3}
 
-    model = Wav2Vec2ForCTCnCLS.from_pretrained(
+    spk_set = sorted(set(train_dataset['speaker']))
+    spk_ids = [i for i in range(len(spk_set))]
+    speaker_dict = dict(zip(spk_set, spk_ids))
+    spk_len = len(speaker_dict)
+
+    print('<debug:> showing the speaker_dict')
+    print(speaker_dict)
+
+    model = Wav2Vec2AdversarialSpk.from_pretrained(
         model_args.model_name_or_path,
         cache_dir=model_args.cache_dir,
-        gradient_checkpointing=True, # training_args.gradient_checkpointing,
-        vocab_size=len(processor.tokenizer),
-        cls_len=len(cls_label_map),
-        alpha=model_args.alpha,
+        spk_len=spk_len,
     )
- 
-    wer_metric = datasets.load_metric("wer")
-    target_sr = processor.feature_extractor.sampling_rate if data_args.target_feature_extractor_sampling_rate else None
-    vocabulary_chars_str = "".join(t for t in processor.tokenizer.get_vocab().keys() if len(t) == 1)
-    vocabulary_text_cleaner = re.compile(  # remove characters not in vocabulary
-        f"[^\s{re.escape(vocabulary_chars_str)}]",  # allow space in addition to chars in vocabulary
-        flags=re.IGNORECASE if processor.tokenizer.do_lower_case else 0,
-    )
-    text_updates = []
+    model.config.gradient_checkpointing = True
 
+    target_sr = processor.feature_extractor.sampling_rate if data_args.target_feature_extractor_sampling_rate else None
     def prepare_example(example, audio_only=False):  # TODO(elgeish) make use of multiprocessing?
         example["speech"], example["sampling_rate"] = librosa.load(example[data_args.speech_file_column], sr=target_sr)
         if data_args.max_duration_in_seconds is not None:
             example["duration_in_seconds"] = len(example["speech"]) / example["sampling_rate"]
-        if audio_only is False:
-            # Normalize and clean up text; order matters!
-            updated_text = orthography.preprocess_for_training(example[data_args.target_text_column])
-            updated_text = vocabulary_text_cleaner.sub("", updated_text)
-            if updated_text != example[data_args.target_text_column]:
-                text_updates.append((example[data_args.target_text_column], updated_text))
-                example[data_args.target_text_column] = updated_text
         return example
 
     if training_args.do_train:
@@ -468,12 +396,6 @@ def main():
                 )
     # logger.info(f"Split sizes: {len(train_dataset)} train and {len(val_dataset)} validation.")
 
-    logger.warning(f"Updated {len(text_updates)} transcript(s) using '{data_args.orthography}' orthography rules.")
-    if logger.isEnabledFor(logging.DEBUG):
-        for original_text, updated_text in text_updates:
-            logger.debug(f'Updated text: "{original_text}" -> "{updated_text}"')
-    text_updates = None
-
     def prepare_dataset(batch, audio_only=False):
         # check that all files have the correct sampling rate
         assert (
@@ -481,16 +403,17 @@ def main():
         ), f"Make sure all inputs have the same sampling rate of {processor.feature_extractor.sampling_rate}."
         batch["input_values"] = processor(batch["speech"], sampling_rate=batch["sampling_rate"][0]).input_values
         if audio_only is False:
-            cls_labels = list(map(lambda e: cls_label_map[e], batch["emotion"]))
-            with processor.as_target_processor():
-                batch["labels"] = processor(batch[data_args.target_text_column]).input_ids
+            cls_labels = list(map(lambda e: emotion_mapping[e], batch["emotion"]))
+            batch["labels"] = [[] * i for i in range(len(cls_labels))]
             for i in range(len(cls_labels)):
                 batch["labels"][i].append(cls_labels[i]) # batch["labels"] element has to be a single list
         return batch
 
+    cols_to_remove = ['Unnamed: 0.1', 'Unnamed: 0', 'emotion', 'speaker', 'text', 'speech', 'sampling_rate']
     if training_args.do_train:
         train_dataset = train_dataset.map(
             prepare_dataset,
+            remove_columns=cols_to_remove,
             batch_size=training_args.per_device_train_batch_size,
             batched=True,
             num_proc=data_args.preprocessing_num_workers,
@@ -498,6 +421,7 @@ def main():
     if training_args.do_predict:
         val_dataset = val_dataset.map(
             prepare_dataset,
+            remove_columns=cols_to_remove,
             fn_kwargs={'audio_only':True},
             batch_size=training_args.per_device_train_batch_size,
             batched=True,
@@ -506,40 +430,26 @@ def main():
     elif training_args.do_eval:
         val_dataset = val_dataset.map(
             prepare_dataset,
+            remove_columns=cols_to_remove,
             batch_size=training_args.per_device_train_batch_size,
             batched=True,
             num_proc=data_args.preprocessing_num_workers,
         )
+    
 
-    data_collator = DataCollatorCTCWithPadding(processor=processor, padding=True)
+    data_collator = MyDataCollator(processor=processor, padding=True)
 
     def compute_metrics(pred):
-        cls_pred_logits = pred.predictions[1]
+        cls_pred_logits = pred.predictions[0]
         cls_pred_ids = np.argmax(cls_pred_logits, axis=-1)
-        total = len(pred.label_ids[1])
-        correct = (cls_pred_ids == pred.label_ids[1]).sum().item() # label = (ctc_label, cls_label)
+        total = len(pred.label_ids)
+        correct = (cls_pred_ids == pred.label_ids).sum().item() # label = (ctc_label, cls_label)
+        return {"acc": correct/total, "correct": correct, "total": total}
 
-        ctc_pred_logits = pred.predictions[0]
-        ctc_pred_ids = np.argmax(ctc_pred_logits, axis=-1)
-        pred.label_ids[0][pred.label_ids[0] == -100] = processor.tokenizer.pad_token_id
-        ctc_pred_str = processor.batch_decode(ctc_pred_ids)
-        # we do not want to group tokens when computing the metrics
-        ctc_label_str = processor.batch_decode(pred.label_ids[0], group_tokens=False)
-        if logger.isEnabledFor(logging.DEBUG):
-            for reference, predicted in zip(label_str, pred_str):
-                logger.debug(f'reference: "{reference}"')
-                logger.debug(f'predicted: "{predicted}"')
-                if orthography.untransliterator is not None:
-                    logger.debug(f'reference (untransliterated): "{orthography.untransliterator(reference)}"')
-                    logger.debug(f'predicted (untransliterated): "{orthography.untransliterator(predicted)}"')
+    if data_args.mode == 'train_emotion':
+        model.freeze_spk_head()
 
-        wer = wer_metric.compute(predictions=ctc_pred_str, references=ctc_label_str)
-        return {"acc": correct/total, "wer": wer, "correct": correct, "total": total, "strlen": len(ctc_label_str)}
-
-    if model_args.freeze_feature_extractor:
-        model.freeze_feature_extractor()
-
-    trainer = CTCTrainer(
+    trainer = MyTrainer(
         model=model,
         data_collator=data_collator,
         args=training_args,
@@ -547,6 +457,7 @@ def main():
         train_dataset=train_dataset,
         eval_dataset=val_dataset,
         tokenizer=processor.feature_extractor,
+        callbacks=[MyEarlyStoppingCallback(model=model, early_stopping_patience=5)]
     )
 
     if last_checkpoint is not None:

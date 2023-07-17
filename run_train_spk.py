@@ -200,7 +200,6 @@ class MyDataCollator:
         )
 
         batch["labels"] = torch.tensor(cls_labels) # labels = (ctc_labels, cls_labels)
-
         return batch
 
 
@@ -332,6 +331,7 @@ def main():
         spk_len=spk_len,
     )
     model.config.gradient_checkpointing = True
+    model.mode = 'train_speaker'
 
     if training_args.do_train:
         model.freeze_cls_head()
