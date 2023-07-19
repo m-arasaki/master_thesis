@@ -24,8 +24,9 @@ python -m torch.distributed.launch \
 --per_device_eval_batch_size="1" \
 --gradient_accumulation_steps=$ACC \
 --dataset_name emotion \
---evaluation_strategy=epoch \
---save_strategy=epoch \
+--evaluation_strategy=steps \
+--save_strategy=steps \
+--eval_steps=100 \
 --run_name train_emotion_$ID \
 --load_best_model_at_end=True \
 --metric_for_best_model=eval_acc \

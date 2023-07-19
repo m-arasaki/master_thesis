@@ -331,11 +331,9 @@ def main():
         spk_len=spk_len,
     )
     model.config.gradient_checkpointing = True
+    model.freeze_emo_head()
+    model.freeze_feature_extractor()
     model.mode = 'train_speaker'
-
-    if training_args.do_train:
-        model.freeze_cls_head()
-        model.freeze_feature_extractor()
 
     target_sr = processor.feature_extractor.sampling_rate if data_args.target_feature_extractor_sampling_rate else None
     def prepare_example(example, audio_only=False):  # TODO(elgeish) make use of multiprocessing?
@@ -419,9 +417,6 @@ def main():
         total = len(pred.label_ids)
         correct = (cls_pred_ids == pred.label_ids).sum().item() # label = (ctc_label, cls_label)
         return {"acc": correct/total, "correct": correct, "total": total}
-
-    if model_args.freeze_feature_extractor:
-        model.freeze_feature_extractor()
 
     trainer = MyTrainer(
         model=model,

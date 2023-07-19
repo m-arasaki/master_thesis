@@ -24,6 +24,8 @@ import os
 import datetime
 import wandb
 import pickle
+import scipy
+import gc
 
 from transformers import (
     HfArgumentParser,
@@ -35,6 +37,7 @@ from transformers import (
     is_apex_available,
     trainer_utils,
     EarlyStoppingCallback,
+    TrainerCallback,
     AdamW
 )
 
@@ -157,6 +160,11 @@ class DataTrainingArguments:
         metadata={'help': 'train_emotion, train_speaker, or eval'}
     )
 
+    beta: float = field(
+        default=0.75,
+        metadata={'help': 'loss = beta * loss_emo - (1 - beta) * loss_spk_H'}
+    )
+
 @dataclass
 class MyDataCollator:
     """
@@ -209,15 +217,6 @@ class MyDataCollator:
         return batch
 
 class MyTrainer(Trainer):
-
-    def evaluate(
-        self,
-        eval_dataset: Optional[datasets.arrow_dataset.Dataset] = None,
-        ignore_keys: Optional[List[str]] = None,
-        metric_key_prefix: str = "eval",
-    ) -> Dict[str, float]:
-        self.model.mode = 'eval'
-        super().evaluate()
 
     def _prepare_inputs(self, inputs: Dict[str, Union[torch.Tensor, Any]]) -> Dict[str, Union[torch.Tensor, Any]]:
 
@@ -286,20 +285,43 @@ class MyTrainer(Trainer):
 
         return loss.detach()
 
-class MyEarlyStoppingCallback(EarlyStoppingCallback):
+class EarlyStoppingCallbackWithGC(EarlyStoppingCallback):
 
-    def __init__(self, model, early_stopping_patience=5):
-        super().__init__(early_stopping_patience=early_stopping_patience)
-        self.model = model
+    def on_init_end(self, args, state, control, **kwargs):
+        
+        torch.cuda.empty_cache()
 
     def on_epoch_begin(self, args, state, control, **kwargs):
-        self.model.mode = 'train_emotion'
-        print('<debug:> on_epoch_begin, model.mode = ' + self.model.mode)
+        
+        torch.cuda.empty_cache()
+    
+    def on_epoch_end(self, args, state, control, **kwargs):
+        
+        torch.cuda.empty_cache()
+    
+    def on_step_begin(self, args, state, control, **kwargs):
 
-    # def on_evaluate(self, args, state, control, **kwargs):
-    #     self.model.mode = 'eval'
-    #     print('<debug:> on_evaluate, model.mode = ' + self.model.mode)
-    #     super().on_evaluate(args, state, control, kwargs)
+        torch.cuda.empty_cache()
+
+    def on_step_end(self, args, state, control, **kwargs):
+
+        torch.cuda.empty_cache()
+
+    def on_save(self, args, state, control, **kwargs):
+        
+        torch.cuda.empty_cache()
+    
+    def on_log(self, args, state, control, **kwargs):
+        
+        torch.cuda.empty_cache()
+
+    def on_train_begin(self, args, state, control, **kwargs):
+        
+        torch.cuda.empty_cache()
+
+    def on_train_end(self, args, state, control, **kwargs):
+        
+        torch.cuda.empty_cache()
 
 def create_processor(model_args: ModelArguments) -> Wav2Vec2Processor:
     feature_extractor = Wav2Vec2FeatureExtractor.from_pretrained(
@@ -346,6 +368,7 @@ def main():
     if data_args.dataset_name == 'emotion':
         train_dataset = datasets.load_dataset('csv', data_files='../dataset/iemocap/iemocap_' + str(data_args.split_id) + '.train.csv', cache_dir=model_args.cache_dir)['train']
         val_dataset = datasets.load_dataset('csv', data_files='../dataset/iemocap/iemocap_' + str(data_args.split_id) + '.val.csv', cache_dir=model_args.cache_dir)['train']
+        test_dataset = datasets.load_dataset('csv', data_files='../dataset/iemocap/iemocap_' + str(data_args.split_id) + '.test.csv', cache_dir=model_args.cache_dir)['train']
         emotion_mapping = {"e0":0, "e1":1, "e2":2, "e3":3}
 
     spk_set = sorted(set(train_dataset['speaker']))
@@ -360,6 +383,7 @@ def main():
         model_args.model_name_or_path,
         cache_dir=model_args.cache_dir,
         spk_len=spk_len,
+        beta=data_args.beta
     )
     model.config.gradient_checkpointing = True
 
@@ -372,10 +396,13 @@ def main():
 
     if training_args.do_train:
         train_dataset = train_dataset.map(prepare_example, remove_columns=[data_args.speech_file_column])
+        val_dataset = val_dataset.map(prepare_example, remove_columns=[data_args.speech_file_column])
     if training_args.do_predict:
         val_dataset = val_dataset.map(prepare_example, fn_kwargs={'audio_only':True})
     elif training_args.do_eval:
-        val_dataset = val_dataset.map(prepare_example, remove_columns=[data_args.speech_file_column])
+        if not training_args.do_train:
+            val_dataset = val_dataset.map(prepare_example, remove_columns=[data_args.speech_file_column])
+        test_dataset = test_dataset.map(prepare_example, remove_columns=[data_args.speech_file_column])
 
     if data_args.max_duration_in_seconds is not None:
         def filter_by_max_duration(example):
@@ -418,6 +445,13 @@ def main():
             batched=True,
             num_proc=data_args.preprocessing_num_workers,
         )
+        val_dataset = val_dataset.map(
+            prepare_dataset,
+            remove_columns=cols_to_remove,
+            batch_size=training_args.per_device_train_batch_size,
+            batched=True,
+            num_proc=data_args.preprocessing_num_workers,
+        )
     if training_args.do_predict:
         val_dataset = val_dataset.map(
             prepare_dataset,
@@ -428,23 +462,43 @@ def main():
             num_proc=data_args.preprocessing_num_workers,
         )
     elif training_args.do_eval:
-        val_dataset = val_dataset.map(
+        test_dataset = test_dataset.map(
             prepare_dataset,
             remove_columns=cols_to_remove,
             batch_size=training_args.per_device_train_batch_size,
             batched=True,
             num_proc=data_args.preprocessing_num_workers,
         )
+        if not training_args.do_train:
+            val_dataset = val_dataset.map(
+                prepare_dataset,
+                remove_columns=cols_to_remove,
+                batch_size=training_args.per_device_train_batch_size,
+                batched=True,
+                num_proc=data_args.preprocessing_num_workers,
+            )
     
 
     data_collator = MyDataCollator(processor=processor, padding=True)
 
     def compute_metrics(pred):
-        cls_pred_logits = pred.predictions[0]
-        cls_pred_ids = np.argmax(cls_pred_logits, axis=-1)
+
+        def _softmax_cross_entropy(logits, y_true):
+            true_class_logits = logits[np.arange(len(logits)), y_true]
+
+            cross_entropy = -true_class_logits + np.log(np.sum(np.exp(logits), axis=-1))
+            return cross_entropy.mean()
+
+        emo_pred_logits = pred.predictions[0][0]
+        emo_pred_ids = np.argmax(emo_pred_logits, axis=-1)
+        spk_probs = pred.predictions[0][1]
+        spk_probs = np.clip(spk_probs, np.finfo(spk_probs.dtype).eps, None) # inf防止
         total = len(pred.label_ids)
-        correct = (cls_pred_ids == pred.label_ids).sum().item() # label = (ctc_label, cls_label)
-        return {"acc": correct/total, "correct": correct, "total": total}
+
+        correct = (emo_pred_ids == pred.label_ids).sum().item() # label = (ctc_label, cls_label)
+        entropy = scipy.stats.entropy(spk_probs, axis=-1).mean()
+        emo_loss = _softmax_cross_entropy(emo_pred_logits, pred.label_ids)
+        return {"acc": correct/total, "correct": correct, "total": total, "entropy": entropy, 'CE_loss': emo_loss}
 
     if data_args.mode == 'train_emotion':
         model.freeze_spk_head()
@@ -457,7 +511,7 @@ def main():
         train_dataset=train_dataset,
         eval_dataset=val_dataset,
         tokenizer=processor.feature_extractor,
-        callbacks=[MyEarlyStoppingCallback(model=model, early_stopping_patience=5)]
+        callbacks=[EarlyStoppingCallbackWithGC(early_stopping_patience=10)]
     )
 
     if last_checkpoint is not None:
@@ -490,12 +544,13 @@ def main():
         f.close()
 
     elif training_args.do_eval:
-        predictions, labels, metrics = trainer.predict(val_dataset, metric_key_prefix="eval")
-        logits_ctc, logits_cls = predictions
-        pred_ids = np.argmax(logits_cls, axis=-1)
-        correct = np.sum(pred_ids == labels[1])
-        acc = correct / len(pred_ids)
-        print('correct:', correct, ', acc:', acc)
+        val_predictions, val_labels, val_metrics = trainer.predict(val_dataset, metric_key_prefix="val")
+        test_predictions, test_labels, test_metrics = trainer.predict(test_dataset, metric_key_prefix="test")
+        print('validation result')
+        print(val_metrics)
+        print('test result')
+        print(test_metrics)
+        print('delta: ' + str(val_metrics['val_acc'] - test_metrics['test_acc']))
 
 if __name__ == "__main__":
     main()
