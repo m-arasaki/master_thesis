@@ -1,0 +1,182 @@
+------- Emotion -------
+portion_0
+Sad	 97
+Happy	 159
+Anger	 105
+Neutral	 192
+
+portion_1
+Neutral	 146
+Happy	 176
+Sad	 117
+Anger	 114
+
+portion_2
+Sad	 105
+Anger	 116
+Happy	 168
+Neutral	 164
+
+portion_3
+Sad	 100
+Happy	 162
+Neutral	 187
+Anger	 104
+
+portion_4
+Anger	 124
+Happy	 167
+Neutral	 166
+Sad	 96
+
+portion_5
+Neutral	 153
+Happy	 173
+Sad	 111
+Anger	 116
+
+portion_6
+Anger	 111
+Neutral	 167
+Happy	 162
+Sad	 113
+
+portion_7
+Neutral	 170
+Happy	 153
+Anger	 111
+Sad	 119
+
+portion_8
+Anger	 103
+Happy	 166
+Neutral	 182
+Sad	 102
+
+portion_9
+Happy	 150
+Sad	 124
+Neutral	 181
+Anger	 99
+
+------- Speaker -------
+portion_0
+2	47
+7	55
+5	65
+0	43
+1	59
+6	52
+4	56
+8	49
+3	55
+9	72
+
+portion_1
+7	50
+4	66
+5	55
+2	47
+1	53
+6	51
+3	56
+0	63
+8	55
+9	57
+
+portion_2
+1	53
+5	60
+9	70
+4	42
+2	54
+0	47
+3	53
+6	58
+7	47
+8	69
+
+portion_3
+8	68
+0	50
+6	60
+1	42
+5	61
+4	50
+3	58
+9	64
+7	49
+2	51
+
+portion_4
+5	59
+7	56
+1	77
+3	42
+8	54
+4	45
+2	48
+0	70
+9	57
+6	45
+
+portion_5
+6	46
+4	51
+8	48
+2	43
+5	71
+1	51
+0	63
+9	69
+3	64
+7	47
+
+portion_6
+8	55
+0	45
+5	56
+7	51
+4	58
+1	59
+9	63
+6	53
+3	55
+2	58
+
+portion_7
+1	57
+9	68
+8	70
+4	52
+0	42
+6	51
+2	44
+3	53
+5	67
+7	49
+
+portion_8
+7	58
+9	63
+1	48
+8	63
+5	71
+4	48
+2	48
+6	57
+3	52
+0	45
+
+portion_9
+0	60
+1	58
+2	41
+3	54
+6	55
+5	64
+7	41
+8	59
+9	68
+4	54
+

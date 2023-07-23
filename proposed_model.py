@@ -13,11 +13,11 @@ class Wav2Vec2AdversarialSpk(Wav2Vec2PreTrainedModel):
 
     mode = 'train_emotion'
 
-    def __init__(self, config, emo_len=4, spk_len=8, beta=0.75):
+    def __init__(self, config, emo_len=4, spk_len=8, beta=0.75, mode='train_emotion'):
         super().__init__(config)
         self.wav2vec2 = Wav2Vec2Model(config)
         self.dropout = nn.Dropout(config.final_dropout)
-        self.emo_head = nn.Sequential(
+        self.cls_head = nn.Sequential(
             nn.Linear(config.hidden_size, emo_len)
         )
         self.spk_head = nn.Sequential(
@@ -29,6 +29,7 @@ class Wav2Vec2AdversarialSpk(Wav2Vec2PreTrainedModel):
         )
         self.init_weights()
         self.beta = beta
+        self.mode = mode
         
 
     def freeze_feature_extractor(self):
@@ -36,10 +37,8 @@ class Wav2Vec2AdversarialSpk(Wav2Vec2PreTrainedModel):
             p.requires_grad = False
     
     def freeze_emo_head(self): 
-        for param in self.emo_head.parameters():
+        for param in self.cls_head.parameters():
             param.requires_grad = False
-        
-        print('<debug:> successfully freezed cls_head')
     
     def freeze_spk_head(self): 
         for param in self.spk_head.parameters():
@@ -90,7 +89,7 @@ class Wav2Vec2AdversarialSpk(Wav2Vec2PreTrainedModel):
             # 感情認識器訓練モード
 
             # 各logitsを計算
-            logits_emo = self.emo_head(torch.mean(hidden_states, dim=1)) 
+            logits_emo = self.cls_head(torch.mean(hidden_states, dim=1)) 
             logits_spk = self.spk_head(torch.mean(hidden_states, dim=1))
             probs_spk = F.softmax(logits_spk, dim=-1) # 話者認識については，probsに意味があるためlogitsではなくprobを扱う
 
@@ -103,7 +102,7 @@ class Wav2Vec2AdversarialSpk(Wav2Vec2PreTrainedModel):
             loss = self.beta * loss_emo - (1 - self.beta) * loss_spk_H
         elif self.mode == 'eval': 
             # 評価モード
-            logits = self.emo_head(torch.mean(hidden_states, dim=1))
+            logits = self.cls_head(torch.mean(hidden_states, dim=1))
             loss = self._cls_loss(logits, labels)
         else:
             raise Exception('Invalid mode: ' + self.mode)

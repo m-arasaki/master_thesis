@@ -26,6 +26,8 @@ import wandb
 import pickle
 import scipy
 import gc
+from sklearn.manifold import TSNE
+import plotly.express as px
 
 from transformers import (
     HfArgumentParser,
@@ -76,6 +78,16 @@ class ModelArguments:
     tokenizer: Optional[str] = field(
         default=None,
         metadata={"help": "Path to pretrained tokenizer"}
+    )
+
+    beta: float = field(
+        default=0.75,
+        metadata={'help': 'loss = beta * loss_emo - (1 - beta) * loss_spk_H'}
+    )
+
+    mode: str = field(
+        default='train_emotion',
+        metadata={'help': 'train_emotion, train_speaker, or eval'}
     )
 
 
@@ -153,16 +165,6 @@ class DataTrainingArguments:
     output_file: Optional[str] = field(
         default=None,
         metadata={"help": "Output file."},
-    )
-
-    mode: str = field(
-        default='train_emotion',
-        metadata={'help': 'train_emotion, train_speaker, or eval'}
-    )
-
-    beta: float = field(
-        default=0.75,
-        metadata={'help': 'loss = beta * loss_emo - (1 - beta) * loss_spk_H'}
     )
 
 @dataclass
@@ -383,9 +385,11 @@ def main():
         model_args.model_name_or_path,
         cache_dir=model_args.cache_dir,
         spk_len=spk_len,
-        beta=data_args.beta
+        beta=model_args.beta,
+        mode=model_args.mode
     )
     model.config.gradient_checkpointing = True
+    print('beta:' + str(model_args.beta))
 
     target_sr = processor.feature_extractor.sampling_rate if data_args.target_feature_extractor_sampling_rate else None
     def prepare_example(example, audio_only=False):  # TODO(elgeish) make use of multiprocessing?
@@ -403,20 +407,53 @@ def main():
         if not training_args.do_train:
             val_dataset = val_dataset.map(prepare_example, remove_columns=[data_args.speech_file_column])
         test_dataset = test_dataset.map(prepare_example, remove_columns=[data_args.speech_file_column])
+    
+    if data_args.max_duration_in_seconds is not None:
+        logger.info('****** filtering ******')
+        def filter_by_max_duration(example):
+            return example["duration_in_seconds"] <= data_args.max_duration_in_seconds
+        if training_args.do_train:
+            old_train_size = len(train_dataset)
+            train_dataset = train_dataset.filter(filter_by_max_duration)
+            if len(train_dataset) < old_train_size:
+                logger.warning(
+                    f"Filtered out {old_train_size - len(train_dataset)} train example(s) longer than {data_args.max_duration_in_seconds} second(s)."
+                )
+            old_val_size = len(val_dataset)
+            val_dataset = val_dataset.filter(filter_by_max_duration)
+            if len(val_dataset) < old_val_size:
+                logger.warning(
+                    f"Filtered out {old_val_size - len(val_dataset)} val example(s) longer than {data_args.max_duration_in_seconds} second(s)."
+                )
+            
+        if training_args.do_eval:
+            if not training_args.do_train:
+                old_val_size = len(val_dataset)
+                val_dataset = val_dataset.filter(filter_by_max_duration)
+                if len(val_dataset) > old_val_size:
+                    logger.warning(
+                        f"Filtered out {old_test_size - len(test_dataset)} validation example(s) longer than {data_args.max_duration_in_seconds} second(s)."
+                    )
+            old_test_size = len(test_dataset)
+            test_dataset = test_dataset.filter(filter_by_max_duration)
+            if len(test_dataset) > old_test_size:
+                logger.warning(
+                    f"Filtered out {len(test_dataset) - old_test_size} test example(s) longer than {data_args.max_duration_in_seconds} second(s)."
+                )
 
     if data_args.max_duration_in_seconds is not None:
         def filter_by_max_duration(example):
             return example["duration_in_seconds"] <= data_args.max_duration_in_seconds
         if training_args.do_train:
             old_train_size = len(train_dataset)
-            train_dataset = train_dataset.filter(filter_by_max_duration, remove_columns=["duration_in_seconds"])
+            train_dataset = train_dataset.filter(filter_by_max_duration)
             if len(train_dataset) > old_train_size:
                 logger.warning(
                     f"Filtered out {len(train_dataset) - old_train_size} train example(s) longer than {data_args.max_duration_in_seconds} second(s)."
                 )
         if training_args.do_predict or training_args.do_eval:
             old_val_size = len(val_dataset)
-            val_dataset = val_dataset.filter(filter_by_max_duration, remove_columns=["duration_in_seconds"])
+            val_dataset = val_dataset.filter(filter_by_max_duration)
             if len(val_dataset) > old_val_size:
                 logger.warning(
                     f"Filtered out {len(val_dataset) - old_val_size} validation example(s) longer than {data_args.max_duration_in_seconds} second(s)."
@@ -445,23 +482,7 @@ def main():
             batched=True,
             num_proc=data_args.preprocessing_num_workers,
         )
-        val_dataset = val_dataset.map(
-            prepare_dataset,
-            remove_columns=cols_to_remove,
-            batch_size=training_args.per_device_train_batch_size,
-            batched=True,
-            num_proc=data_args.preprocessing_num_workers,
-        )
-    if training_args.do_predict:
-        val_dataset = val_dataset.map(
-            prepare_dataset,
-            remove_columns=cols_to_remove,
-            fn_kwargs={'audio_only':True},
-            batch_size=training_args.per_device_train_batch_size,
-            batched=True,
-            num_proc=data_args.preprocessing_num_workers,
-        )
-    elif training_args.do_eval:
+    if training_args.do_eval or training_args.do_predict:
         test_dataset = test_dataset.map(
             prepare_dataset,
             remove_columns=cols_to_remove,
@@ -469,15 +490,13 @@ def main():
             batched=True,
             num_proc=data_args.preprocessing_num_workers,
         )
-        if not training_args.do_train:
-            val_dataset = val_dataset.map(
-                prepare_dataset,
-                remove_columns=cols_to_remove,
-                batch_size=training_args.per_device_train_batch_size,
-                batched=True,
-                num_proc=data_args.preprocessing_num_workers,
-            )
-    
+        val_dataset = val_dataset.map(
+            prepare_dataset,
+            remove_columns=cols_to_remove,
+            batch_size=training_args.per_device_train_batch_size,
+            batched=True,
+            num_proc=data_args.preprocessing_num_workers,
+        )
 
     data_collator = MyDataCollator(processor=processor, padding=True)
 
@@ -500,8 +519,10 @@ def main():
         emo_loss = _softmax_cross_entropy(emo_pred_logits, pred.label_ids)
         return {"acc": correct/total, "correct": correct, "total": total, "entropy": entropy, 'CE_loss': emo_loss}
 
-    if data_args.mode == 'train_emotion':
+    if model_args.mode == 'train_emotion':
         model.freeze_spk_head()
+        if training_args.local_rank == 0:
+            logger.info('successfully freezed cls_head')
 
     trainer = MyTrainer(
         model=model,
@@ -526,31 +547,22 @@ def main():
         trainer.save_model() 
 
     if training_args.do_predict:
-        logger.info('******* Predict ********')
-        data_collator.audio_only=True
-        predictions, labels, metrics = trainer.predict(val_dataset, metric_key_prefix="predict")
-        logits_ctc, logits_cls = predictions
-        pred_ids = np.argmax(logits_cls, axis=-1)
-        pred_probs = F.softmax(torch.from_numpy(logits_cls).float(), dim=-1)
-        print(val_dataset)
-        with open(data_args.output_file, 'w') as f:
-            for i in range(len(pred_ids)):
-                f.write(val_dataset[i]['file'].split("/")[-1] + " " + str(len(val_dataset[i]['input_values'])/16000) + " ")
-                pred = pred_ids[i]
-                f.write(str(pred)+' ')
-                for j in range(4):
-                    f.write(' ' + str(pred_probs[i][j].item()))
-                f.write('\n')
-        f.close()
+        cls_head('******* Predict ********')
+        val_dataset = torch.utils.data.Dataset(val_dataset['input_values'], val_dataset)
 
     elif training_args.do_eval:
         val_predictions, val_labels, val_metrics = trainer.predict(val_dataset, metric_key_prefix="val")
         test_predictions, test_labels, test_metrics = trainer.predict(test_dataset, metric_key_prefix="test")
-        print('validation result')
-        print(val_metrics)
-        print('test result')
-        print(test_metrics)
-        print('delta: ' + str(val_metrics['val_acc'] - test_metrics['test_acc']))
-
+        if training_args.local_rank == 0:
+            with open('result_' + str(data_args.split_id) + '.txt', 'w') as f:
+                f.write('validation result:\n')
+                f.write(str(val_metrics) + '\n')
+                f.write('test result:\n')
+                f.write(str(test_metrics) + '\n')
+                f.write('delta: ' + str(val_metrics['val_acc'] - test_metrics['test_acc']) + '\n')
+                correct = val_metrics['val_correct'] + test_metrics['test_correct']
+                total = val_metrics['val_total'] + test_metrics['test_total']
+                f.write('overall acc: ' + str(correct / total))
+                f.close()
 if __name__ == "__main__":
     main()
