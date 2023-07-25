@@ -13,7 +13,7 @@ class Wav2Vec2AdversarialSpk(Wav2Vec2PreTrainedModel):
 
     mode = 'train_emotion'
 
-    def __init__(self, config, emo_len=4, spk_len=8, beta=0.75, mode='train_emotion'):
+    def __init__(self, config, emo_len=4, spk_len=8, beta=0.99, mode='train_emotion'):
         super().__init__(config)
         self.wav2vec2 = Wav2Vec2Model(config)
         self.dropout = nn.Dropout(config.final_dropout)

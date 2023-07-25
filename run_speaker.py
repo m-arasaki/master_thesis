@@ -460,11 +460,7 @@ def main():
 
     elif training_args.do_eval:
         predictions, labels, metrics = trainer.predict(val_dataset, metric_key_prefix="eval")
-        logits_ctc, logits_cls = predictions
-        pred_ids = np.argmax(logits_cls, axis=-1)
-        correct = np.sum(pred_ids == labels[1])
-        acc = correct / len(pred_ids)
-        print('correct:', correct, ', acc:', acc)
+        print(metrics)
 
 if __name__ == "__main__":
     main()

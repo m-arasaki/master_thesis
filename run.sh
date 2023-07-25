@@ -1,10 +1,10 @@
-export MODEL=wav2vec2-base
+export MODEL=../ckpts/baseline
 export TOKENIZER=wav2vec2-base
 export LR=5e-5
 export ACC=6 # batch size * acc = 6
 export WORKER_NUM=4
 export ID=$1
-export WANDB_PROJECT=emotion_beta0.99filtering
+export WANDB_PROJECT=emotion_beta0.99retrained
 
 export CUDA_VISIBLE_DEVICES="0, 1, 2, 3"
 export CUDA_LAUNCH_BLOCKING=1
@@ -17,10 +17,10 @@ python -m torch.distributed.launch \
 --cache_dir=cache/ \
 --beta 0.99 \
 --max_duration_in_seconds=17 \
---output_dir=outputs/train_emotion \
---logging_dir=outputs/train_emotion \
+--output_dir=projects/$WANDB_PROJECT \
+--logging_dir=projects/$WANDB_PROJECT/logs \
 --tokenizer facebook/$TOKENIZER \
---num_train_epochs=50 \
+--num_train_epochs=10 \
 --per_device_train_batch_size="1" \
 --per_device_eval_batch_size="1" \
 --gradient_accumulation_steps=$ACC \
@@ -31,6 +31,7 @@ python -m torch.distributed.launch \
 --load_best_model_at_end=True \
 --metric_for_best_model=eval_acc \
 --save_total_limit="1" \
+--do_train \
 --do_eval \
 --learning_rate=$LR \
 --preprocessing_num_workers=$WORKER_NUM \

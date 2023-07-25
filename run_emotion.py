@@ -369,8 +369,8 @@ def main():
 
     if data_args.dataset_name == 'emotion':
         train_dataset = datasets.load_dataset('csv', data_files='../dataset/iemocap/iemocap_' + str(data_args.split_id) + '.train.csv', cache_dir=model_args.cache_dir)['train']
-        val_dataset = datasets.load_dataset('csv', data_files='../dataset/iemocap/iemocap_' + str(data_args.split_id) + '.val.csv', cache_dir=model_args.cache_dir)['train']
-        test_dataset = datasets.load_dataset('csv', data_files='../dataset/iemocap/iemocap_' + str(data_args.split_id) + '.test.csv', cache_dir=model_args.cache_dir)['train']
+        val_dataset = datasets.load_dataset('csv', data_files='../dataset/iemocap/iemocap_' + str(data_args.split_id) + '.test.csv', cache_dir=model_args.cache_dir)['train']
+        test_dataset = datasets.load_dataset('csv', data_files='../dataset/iemocap/iemocap_' + str(data_args.split_id) + '.val.csv', cache_dir=model_args.cache_dir)['train']
         emotion_mapping = {"e0":0, "e1":1, "e2":2, "e3":3}
 
     spk_set = sorted(set(train_dataset['speaker']))
@@ -430,13 +430,13 @@ def main():
             if not training_args.do_train:
                 old_val_size = len(val_dataset)
                 val_dataset = val_dataset.filter(filter_by_max_duration)
-                if len(val_dataset) > old_val_size:
+                if len(val_dataset) < old_val_size:
                     logger.warning(
-                        f"Filtered out {old_test_size - len(test_dataset)} validation example(s) longer than {data_args.max_duration_in_seconds} second(s)."
+                        f"Filtered out {old_val_size - len(val_dataset)} validation example(s) longer than {data_args.max_duration_in_seconds} second(s)."
                     )
             old_test_size = len(test_dataset)
             test_dataset = test_dataset.filter(filter_by_max_duration)
-            if len(test_dataset) > old_test_size:
+            if len(test_dataset) < old_test_size:
                 logger.warning(
                     f"Filtered out {len(test_dataset) - old_test_size} test example(s) longer than {data_args.max_duration_in_seconds} second(s)."
                 )
@@ -522,7 +522,7 @@ def main():
     if model_args.mode == 'train_emotion':
         model.freeze_spk_head()
         if training_args.local_rank == 0:
-            logger.info('successfully freezed cls_head')
+            logger.info('successfully freezed spk_head')
 
     trainer = MyTrainer(
         model=model,
