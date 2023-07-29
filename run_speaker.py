@@ -74,6 +74,10 @@ class ModelArguments:
         metadata={"help": "Path to pretrained tokenizer"}
     )
 
+    mode: Optional[str] = field(
+        default='train_speaker',
+        metadata={'help': 'train_speaker, train_emotion, or eval'}
+    )
 
 def configure_logger(model_args: ModelArguments, training_args: TrainingArguments):
     logging.basicConfig(
@@ -290,10 +294,6 @@ def main():
     parser = HfArgumentParser((ModelArguments, DataTrainingArguments, TrainingArguments))
 
     model_args, data_args, training_args = parser.parse_args_into_dataclasses()
-    dt_now = datetime.datetime.now()
-    id_str = dt_now.strftime('%Y%m%d_%H%M') + '_id_' + str(data_args.split_id)
-    training_args.output_dir = os.path.join(training_args.output_dir, 'output' + id_str)
-    training_args.logging_dir = os.path.join(training_args.logging_dir, 'logs' + id_str)
     configure_logger(model_args, training_args)
 
     processor = create_processor(model_args)
@@ -333,7 +333,7 @@ def main():
     model.config.gradient_checkpointing = True
     model.freeze_emo_head()
     model.freeze_feature_extractor()
-    model.mode = 'train_speaker'
+    model.mode = model_args.mode
 
     target_sr = processor.feature_extractor.sampling_rate if data_args.target_feature_extractor_sampling_rate else None
     def prepare_example(example, audio_only=False):  # TODO(elgeish) make use of multiprocessing?

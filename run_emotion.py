@@ -343,12 +343,7 @@ def main():
     # We now keep distinct sets of args, for a cleaner separation of concerns.
 
     parser = HfArgumentParser((ModelArguments, DataTrainingArguments, TrainingArguments))
-
     model_args, data_args, training_args = parser.parse_args_into_dataclasses()
-    dt_now = datetime.datetime.now()
-    id_str = dt_now.strftime('%Y%m%d_%H%M') + '_id_' + str(data_args.split_id)
-    training_args.output_dir = os.path.join(training_args.output_dir, 'output' + id_str)
-    training_args.logging_dir = os.path.join(training_args.logging_dir, 'logs' + id_str)
     configure_logger(model_args, training_args)
 
     processor = create_processor(model_args)
