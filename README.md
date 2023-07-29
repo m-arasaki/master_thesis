@@ -7,17 +7,18 @@
    ```
    pip install -r requirement.txt
    ```
-2. 話者認識器を訓練する
+2. IEMOCAPデータセットのwavファイルを`wav_path`としてこのリポジトリの1つ上の階層に配置する
+3. 話者認識器を訓練する
    ```
    bash run_speaker.sh <split_id> (1~5の数字)
    ```
    `split_id`は5-fold交差検証の分割の番号です．
 
-3. 感情認識器と特徴量抽出器を訓練する
+4. 感情認識器と特徴量抽出器を訓練する
    ```
    bash run_emotion.sh <split_id> 
    ```   
-4. 結果を確認する
+5. 結果を確認する
    
    デフォルトでは`outputs/emotion_<split_id>/results_<split_id>.txt`に
    - 検証データにおけるメトリクス
