@@ -1,10 +1,10 @@
-export MODEL=../ckpts/baseline
-export TOKENIZER=wav2vec2-base
+export ID=$1
+export MODEL=../ckpts/baseline/screened17/id_$ID
+export TOKENIZER=facebook/wav2vec2-base
 export LR=5e-4
 export ACC=8 # batch size * acc = 8
 export WORKER_NUM=4
 export WANDB_PROJECT=speaker_from_baseline
-export ID=$1
 
 export CUDA_VISIBLE_DEVICES="0, 1, 2, 3"
 export CUDA_LAUNCH_BLOCKING=1
@@ -18,6 +18,7 @@ python -m torch.distributed.launch \
 --num_train_epochs=50 \
 --per_device_train_batch_size="1" \
 --per_device_eval_batch_size="1" \
+--max_duration_in_seconds=17 \
 --gradient_accumulation_steps=$ACC \
 --dataset_name emotion \
 --split_id $ID \
@@ -31,8 +32,8 @@ python -m torch.distributed.launch \
 --do_train \
 --do_eval \
 --learning_rate=$LR \
---model_name_or_path=facebook/$MODEL \
---tokenizer facebook/$TOKENIZER \
+--model_name_or_path=$MODEL \
+--tokenizer $TOKENIZER \
 --preprocessing_num_workers=$WORKER_NUM \
 --dataloader_num_workers $WORKER_NUM
 # --freeze_feature_extractor \

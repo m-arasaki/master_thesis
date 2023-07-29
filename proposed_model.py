@@ -44,8 +44,6 @@ class Wav2Vec2AdversarialSpk(Wav2Vec2PreTrainedModel):
         for param in self.spk_head.parameters():
             param.requires_grad = False
         
-        print('<debug:> successfully freezed spk_head')
-    
     def _cls_loss(self, logits, cls_labels): # sum hidden_states over dim 1 (the sequence length), then feed into self.cls
         loss = None
         if cls_labels is not None:

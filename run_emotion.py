@@ -369,8 +369,8 @@ def main():
 
     if data_args.dataset_name == 'emotion':
         train_dataset = datasets.load_dataset('csv', data_files='../dataset/iemocap/iemocap_' + str(data_args.split_id) + '.train.csv', cache_dir=model_args.cache_dir)['train']
-        val_dataset = datasets.load_dataset('csv', data_files='../dataset/iemocap/iemocap_' + str(data_args.split_id) + '.test.csv', cache_dir=model_args.cache_dir)['train']
-        test_dataset = datasets.load_dataset('csv', data_files='../dataset/iemocap/iemocap_' + str(data_args.split_id) + '.val.csv', cache_dir=model_args.cache_dir)['train']
+        val_dataset = datasets.load_dataset('csv', data_files='../dataset/iemocap/iemocap_' + str(data_args.split_id) + '.val.csv', cache_dir=model_args.cache_dir)['train']
+        test_dataset = datasets.load_dataset('csv', data_files='../dataset/iemocap/iemocap_' + str(data_args.split_id) + '.test.csv', cache_dir=model_args.cache_dir)['train']
         emotion_mapping = {"e0":0, "e1":1, "e2":2, "e3":3}
 
     spk_set = sorted(set(train_dataset['speaker']))

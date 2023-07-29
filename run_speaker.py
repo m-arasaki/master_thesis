@@ -354,14 +354,14 @@ def main():
             return example["duration_in_seconds"] <= data_args.max_duration_in_seconds
         if training_args.do_train:
             old_train_size = len(train_dataset)
-            train_dataset = train_dataset.filter(filter_by_max_duration, remove_columns=["duration_in_seconds"])
+            train_dataset = train_dataset.filter(filter_by_max_duration)
             if len(train_dataset) > old_train_size:
                 logger.warning(
                     f"Filtered out {len(train_dataset) - old_train_size} train example(s) longer than {data_args.max_duration_in_seconds} second(s)."
                 )
         if training_args.do_predict or training_args.do_eval:
             old_val_size = len(val_dataset)
-            val_dataset = val_dataset.filter(filter_by_max_duration, remove_columns=["duration_in_seconds"])
+            val_dataset = val_dataset.filter(filter_by_max_duration)
             if len(val_dataset) > old_val_size:
                 logger.warning(
                     f"Filtered out {len(val_dataset) - old_val_size} validation example(s) longer than {data_args.max_duration_in_seconds} second(s)."
